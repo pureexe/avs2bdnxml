@@ -1,6 +1,14 @@
 AVS to BluRay SUP/PGS and BDN XML
 =================================
+Konayuki-moe  Note:
 
+for this repo have been mod by Konayuki-moe
+
+### Konayuki.moe Mod add
+- Add FPS support for 23.810, 23.976, 24, 47.619, 47.952,48, 120
+- Set Thai as default language (For konayuki PGS software)
+
+------------------
 This program can be used to transform AviSynth scripts, which produce RGBA
 output, to BDN XML+PNG format. This in turn can be transformed into a SUP file,
 which can be used to master a BluRay disc with subtitles.

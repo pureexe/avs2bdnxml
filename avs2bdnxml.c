@@ -1,6 +1,8 @@
 /*----------------------------------------------------------------------------
  * avs2bdnxml - Generates BluRay subtitle stuff from RGBA AviSynth scripts
+ * Moded By Konayuki.moe
  * Copyright (C) 2008-2013 Arne Bochem <avs2bdnxml at ps-auxw de>
+ * Copyright (C) 20016-2017 Konayuki.moe <me@konayuki.moe>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,8 +17,9 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *----------------------------------------------------------------------------
- * Version 2.09
- *   - Added parameter -F to mark all subtitles forced
+ * Version 2.08-mod
+ *   - Add FPS support for 23.810, 23.976, 24, 47.619, 47.952,48, 120
+ *   - Set Thai as default language (For konayuki PGS software)
  *
  * Version 2.08
  *   - Fix PNG filename references when used with timecode offsets
@@ -158,7 +161,6 @@
 #include "auto_split.h"
 #include "palletize.h"
 #include "sup.h"
-#include "ass.h"
 #include "abstract_lists.h"
 
 /* AVIS input code taken from muxers.c from the x264 project (GPLv2 or later).
@@ -606,18 +608,18 @@ void mk_timecode (int frame, int fps, char *buf) /* buf must have length 12 (inc
 void print_usage ()
 {
 	fprintf(stderr,
-		"avs2bdnxml 2.09\n\n"
+		"avs2bdnxml 2.08 Mod By Konayuki\n\n"
 		"Usage: avs2bdnxml [options] -o output input\n\n"
 		"Input has to be an AviSynth script with RGBA as output colorspace\n\n"
 		"  -o, --output <string>        Output file in BDN XML format\n"
 		"                               For SUP/PGS output, use a .sup extension\n"
 		"  -j, --seek <integer>         Start processing at this frame, first is 0\n"
 		"  -c, --count <integer>        Number of input frames to process\n"
-		"  -t, --trackname <string>     Name of track, like: Undefined\n"
-		"  -l, --language <string>      Language code, like: und\n"
+		"  -t, --trackname <string>     Name of track, like: Thai\n"
+		"  -l, --language <string>      Language code, like: tha\n"
 		"  -v, --video-format <string>  Either of: 480i, 480p,  576i,\n"
 		"                                          720p, 1080i, 1080p\n"
-		"  -f, --fps <float>            Either of: 23.976, 24, 25, 29.97, 50, 59.94\n"
+		"  -f, --fps <float>            Either of: 23.810, 23.976, 24, 25, 29.97, 30 and double framerate.\n"
 		"  -x, --x-offset <integer>     X offset, for use with partial frames.\n"
 		"  -y, --y-offset <integer>     Y offset, for use with partial frames.\n"
 		"  -d, --t-offset <string>      Offset timecodes by this many frames or\n"
@@ -636,10 +638,9 @@ void print_usage ()
 		"                               Might improve buffer problems, but is ugly.\n"
 		"                               [on=1, off=0]\n"
 		"  -b, --buffer-opt <integer>   Optimize PG buffer size by image\n"
-		"                               splitting. [on=1, off=0]\n"
-        "  -F, --forced <integer>       mark all subtitles as forced [on=1, off=0]\n\n"
+		"                               splitting. [on=1, off=0]\n\n"
 		"Example:\n"
-		"  avs2bdnxml -t Undefined -l und -v 1080p -f 23.976 -a1 -p1 -b0 -m3 \\\n"
+		"  avs2bdnxml -t Thai -l tha -v 1080p -f 23.976 -a1 -p1 -b0 -m3 \\\n"
 		"    -u0 -e0 -n0 -z0 -o output.xml input.avs\n"
 		"  (Input and output are required settings. The rest are set to default.)\n"
 		);
@@ -719,13 +720,12 @@ typedef struct event_s
 	int start_frame;
 	int end_frame;
 	int graphics;
-    int forced;
 	crop_t c[2];
 } event_t;
 
 STATIC_LIST(event, event_t)
 
-void add_event_xml_real (event_list_t *events, int image, int start, int end, int graphics, crop_t *crops, int forced)
+void add_event_xml_real (event_list_t *events, int image, int start, int end, int graphics, crop_t *crops)
 {
 	event_t *new = calloc(1, sizeof(event_t));
 	new->image_number = image;
@@ -734,46 +734,45 @@ void add_event_xml_real (event_list_t *events, int image, int start, int end, in
 	new->graphics = graphics;
 	new->c[0] = crops[0];
 	new->c[1] = crops[1];
-    new->forced = forced;
 	event_list_insert_after(events, new);
 }
 
-void add_event_xml (event_list_t *events, int split_at, int min_split, int start, int end, int graphics, crop_t *crops, int forced)
+void add_event_xml (event_list_t *events, int split_at, int min_split, int start, int end, int graphics, crop_t *crops)
 {
 	int image = start;
 	int d = end - start;
 
 	if (!split_at)
-		add_event_xml_real(events, image, start, end, graphics, crops, forced);
+		add_event_xml_real(events, image, start, end, graphics, crops);
 	else
 	{
 		while (d >= split_at + min_split)
 		{
 			d -= split_at;
-			add_event_xml_real(events, image, start, start + split_at, graphics, crops, forced);
+			add_event_xml_real(events, image, start, start + split_at, graphics, crops);
 			start += split_at;
 		}
 		if (d)
-			add_event_xml_real(events, image, start, start + d, graphics, crops, forced);
+			add_event_xml_real(events, image, start, start + d, graphics, crops);
 	}
 }
 
-void write_sup_wrapper (sup_writer_t *sw, uint8_t *im, int num_crop, crop_t *crops, uint32_t *pal, int start, int end, int split_at, int min_split, int stricter, int forced)
+void write_sup_wrapper (sup_writer_t *sw, uint8_t *im, int num_crop, crop_t *crops, uint32_t *pal, int start, int end, int split_at, int min_split, int stricter)
 {
 	int d = end - start;
 
 	if (!split_at)
-		write_sup(sw, im, num_crop, crops, pal, start, end, stricter, forced);
+		write_sup(sw, im, num_crop, crops, pal, start, end, stricter);
 	else
 	{
 		while (d >= split_at + min_split)
 		{
 			d -= split_at;
-			write_sup(sw, im, num_crop, crops, pal, start, start + split_at, stricter, forced);
+			write_sup(sw, im, num_crop, crops, pal, start, start + split_at, stricter);
 			start += split_at;
 		}
 		if (d)
-			write_sup(sw, im, num_crop, crops, pal, start, start + d, stricter, forced);
+			write_sup(sw, im, num_crop, crops, pal, start, start + d, stricter);
 	}
 }
 
@@ -791,20 +790,28 @@ struct framerate_entry_s
 /* Most of the time seems to be spent in AviSynth (about 4/5). */
 int main (int argc, char *argv[])
 {
-	struct framerate_entry_s framerates[] = { {"23.976", "23.976", 24, 0, 24000, 1001}
-	                                        /*, {"23.976d", "23.976", 24000/1001.0, 1}*/
+	struct framerate_entry_s framerates[] = {
+											  {"23.810", "23.810", 24, 0, 23810 , 1000} // 952381,40000 Support HorribleSub @konayuki
+	                                        /*, {"23.976d", "23.976", 24000/1001.0, 1} */
+											, {"23.976", "23.976", 24, 0, 24000, 1001}
 	                                        , {"24", "24", 24, 0, 24, 1}
 	                                        , {"25", "25", 25, 0, 25, 1}
 	                                        , {"29.97", "29.97", 30, 0, 30000, 1001}
-	                                        /*, {"29.97d", "29.97", 30000/1001.0, 1}*/
+											, {"30", "30", 30, 0, 30, 1} // Support 30FPS @konayuki
+	                                        /*, {"29.97d", "29.97", 30000/1001.0, 1} */
+											, {"47.619", "47.619", 48, 0, 23810, 500} // Support HorribleSub*2 @konayuki
+											, {"47.952", "47.952", 48, 0, 48000, 1001} // Support 23.976*2 @konayuki
+											, {"48", "48", 48, 0, 48, 1} // Support 48FPS @konayuki
 	                                        , {"50", "50", 50, 0, 50, 1}
 	                                        , {"59.94", "59.94", 60, 0, 60000, 1001}
-	                                        /*, {"59.94d", "59.94", 60000/1001.0, 1}*/
+											, {"60", "60", 60, 0, 60, 1} // Support 60FPS @konayuki
+											, {"120", "120", 120, 0, 120, 1} // Support 120FPS @konayuki
+	                                        /*, {"59.94d", "59.94", 60000/1001.0, 1} */
 	                                        , {NULL, NULL, 0, 0, 0, 0}
 	                                        };
 	char *avs_filename = NULL;
-	char *track_name = "Undefined";
-	char *language = "und";
+	char *track_name = "Thai";
+	char *language = "tha";
 	char *video_format = "1080p";
 	char *frame_rate = "23.976";
 	char *out_filename[2] = {NULL, NULL};
@@ -827,7 +834,6 @@ int main (int argc, char *argv[])
 	char *in_img = NULL, *old_img = NULL, *tmp = NULL, *out_buf = NULL;
 	char *intc_buf = NULL, *outtc_buf = NULL;
 	char *drop_frame = NULL;
-    char *mark_forced_string = "0";
 	char png_dir[MAX_PATH + 1] = {0};
 	crop_t crops[2];
 	pic_t pic;
@@ -861,7 +867,7 @@ int main (int argc, char *argv[])
 	int xml_output = 0;
 	int allow_empty = 0;
 	int stricter = 0;
-    int mark_forced = 0;
+	int force_new_framerate = 0;
 	sup_writer_t *sw = NULL;
 	avis_input_t *avis_hnd;
 	stream_info_t *s_info = malloc(sizeof(stream_info_t));
@@ -897,12 +903,11 @@ int main (int argc, char *argv[])
 			, {"ugly",         required_argument, 0, 'u'}
 			, {"null-xml",     required_argument, 0, 'n'}
 			, {"stricter",     required_argument, 0, 'z'}
-			, {"forced",       required_argument, 0, 'F'}
 			, {0, 0, 0, 0}
 			};
 			int option_index = 0;
 
-			c = getopt_long(argc, argv, "o:j:c:t:l:v:f:x:y:d:b:s:m:e:p:a:u:n:z:F:", long_options, &option_index);
+			c = getopt_long(argc, argv, "o:j:c:t:l:v:f:x:y:d:b:s:m:e:p:a:u:n:z:", long_options, &option_index);
 			if (c == -1)
 				break;
 			switch (c)
@@ -933,6 +938,7 @@ int main (int argc, char *argv[])
 					break;
 				case 'f':
 					frame_rate = optarg;
+					force_new_framerate = 1;
 					break;
 				case 'x':
 					x_offset = optarg;
@@ -969,9 +975,6 @@ int main (int argc, char *argv[])
 					break;
 				case 'z':
 					stricter_string = optarg;
-					break;
-				case 'F':
-					mark_forced_string = optarg;
 					break;
 				default:
 					print_usage();
@@ -1041,7 +1044,6 @@ int main (int argc, char *argv[])
 	min_split = parse_int(minimum_split, "min-split", NULL);
 	if (!min_split)
 		min_split = 1;
-	mark_forced = parse_int(mark_forced_string, "forced", NULL);
 
 	/* TODO: Sanity check video_format and frame_rate. */
 
@@ -1174,13 +1176,13 @@ int main (int argc, char *argv[])
 			if (sup_output)
 			{
 				assert(pal != NULL);
-				write_sup_wrapper(sw, (uint8_t *)out_buf, n_crop, crops, pal, start_frame + to, i + to, split_at, min_split, stricter, mark_forced);
+				write_sup_wrapper(sw, (uint8_t *)out_buf, n_crop, crops, pal, start_frame + to, i + to, split_at, min_split, stricter);
 				if (!xml_output)
 					free(pal);
 				pal = NULL;
 			}
 			if (xml_output)
-				add_event_xml(events, split_at, min_split, start_frame + to, i + to, n_crop, crops, mark_forced);
+				add_event_xml(events, split_at, min_split, start_frame + to, i + to, n_crop, crops);
 			end_frame = i;
 			have_line = 0;
 		}
@@ -1238,14 +1240,14 @@ int main (int argc, char *argv[])
 		if (sup_output)
 		{
 			assert(pal != NULL);
-			write_sup_wrapper(sw, (uint8_t *)out_buf, n_crop, crops, pal, start_frame + to, i - 1 + to, split_at, min_split, stricter, mark_forced);
+			write_sup_wrapper(sw, (uint8_t *)out_buf, n_crop, crops, pal, start_frame + to, i - 1 + to, split_at, min_split, stricter);
 			if (!xml_output)
 				free(pal);
 			pal = NULL;
 		}
 		if (xml_output)
 		{
-			add_event_xml(events, split_at, min_split, start_frame + to, i - 1 + to, n_crop, crops, mark_forced);
+			add_event_xml(events, split_at, min_split, start_frame + to, i - 1 + to, n_crop, crops);
 			free(pal);
 			pal = NULL;
 		}
@@ -1293,7 +1295,7 @@ int main (int argc, char *argv[])
 			"<BDN Version=\"0.93\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n"
 			"xsi:noNamespaceSchemaLocation=\"BD-03-006-0093b BDN File Format.xsd\">\n"
 			"<Description>\n"
-			"<Name Title=\"%s\" Content=\"\"/>\n"
+			"<Name Title=\"%s\" Content=\"Konayuki PGS Maker\"/>\n"
 			"<Language Code=\"%s\"/>\n"
 			"<Format VideoFormat=\"%s\" FrameRate=\"%s\" DropFrame=\"%s\"/>\n"
 			"<Events LastEventOutTC=\"%s\" FirstEventInTC=\"%s\"\n", track_name, language, video_format, frame_rate, drop_frame, outtc_buf, intc_buf);
@@ -1318,7 +1320,7 @@ int main (int argc, char *argv[])
 					mk_timecode(event->end_frame + 1, fps, outtc_buf);
 				}
 
-				fprintf(fh, "<Event Forced=\"%s\" InTC=\"%s\" OutTC=\"%s\">\n", (event->forced ? "True" : "False"), intc_buf, outtc_buf);
+				fprintf(fh, "<Event Forced=\"True\" InTC=\"%s\" OutTC=\"%s\">\n", intc_buf, outtc_buf);
 				for (i = 0; i < event->graphics; i++)
 				{
 					fprintf(fh, "<Graphic Width=\"%d\" Height=\"%d\" X=\"%d\" Y=\"%d\">%08d_%d.png</Graphic>\n", event->c[i].w, event->c[i].h, xo + event->c[i].x, yo + event->c[i].y, event->image_number - to, i);
@@ -1345,4 +1347,3 @@ int main (int argc, char *argv[])
 
 	return 0;
 }
-
